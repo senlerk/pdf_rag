@@ -2,13 +2,11 @@ import streamlit as st
 import os
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma  # Changed from FAISS to Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
-import PyPDF2
-import textwrap
 import tempfile
 
 # Set page configuration
@@ -51,7 +49,6 @@ def verify_api_key(api_key):
         temperature=0
     )
     try:
-        # Try a simple completion to verify the API key
         llm.invoke("test")
         return True
     except Exception as e:
@@ -88,11 +85,14 @@ def setup_qa_system(documents):
         )
         splits = text_splitter.split_documents(documents)
 
-        # Create vector store
+        # Create vector store using Chroma instead of FAISS
         embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-mpnet-base-v2"
         )
-        vectorstore = FAISS.from_documents(splits, embeddings)
+        vectorstore = Chroma.from_documents(
+            documents=splits,
+            embedding=embeddings
+        )
 
         # Setup QA chain
         template = """
@@ -127,14 +127,12 @@ def setup_qa_system(documents):
 def main():
     initialize_session_state()
     
-    # Title and description
     st.title("📚 PDF Question Answering System")
     st.markdown("""
     Upload your PDF documents and ask questions about their content. 
     The system will provide answers based on the information found in the documents.
     """)
     
-    # Sidebar for API key and file upload
     with st.sidebar:
         st.header("Setup")
         api_key = st.text_input("Enter OpenAI API Key", type="password")
@@ -165,7 +163,6 @@ def main():
                             st.success("✅ System ready for questions!")
                             st.balloons()
     
-    # Main area for Q&A
     if st.session_state.processing_complete:
         st.header("Ask Questions")
         question = st.text_input("Enter your question:")
@@ -176,11 +173,9 @@ def main():
                     with st.spinner("Searching for answer..."):
                         result = st.session_state.qa_chain({"query": question})
                         
-                    # Display answer
                     st.markdown("### Answer")
                     st.write(result["result"])
                     
-                    # Display sources
                     st.markdown("### Sources")
                     for doc in result["source_documents"]:
                         with st.expander(f"Page {doc.metadata.get('page', 'unknown')}"):
@@ -192,7 +187,6 @@ def main():
             else:
                 st.warning("Please enter a question.")
     
-    # Footer
     st.markdown("---")
     st.markdown("Made with ❤️ using Streamlit and LangChain")
 
