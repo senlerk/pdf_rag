@@ -9,6 +9,7 @@ from langchain.prompts import PromptTemplate
 import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+import pypdf  # Added this import
 
 # Set page configuration
 st.set_page_config(
