@@ -10,8 +10,7 @@ import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import nltk
-import torch
-import pypdf
+import traceback
 
 # Download required NLTK data
 try:
@@ -86,12 +85,13 @@ def initialize_session_state():
 
 def verify_api_key(api_key):
     """Verify OpenAI API key"""
-    llm = ChatOpenAI(
-        api_key=api_key,
-        model_name="gpt-4-turbo-preview",
-        temperature=0
-    )
     try:
+        llm = ChatOpenAI(
+            api_key=api_key,
+            model_name="gpt-4-turbo-preview",
+            temperature=0
+        )
+        # Simple test prompt
         llm.invoke("test")
         return True
     except Exception as e:
@@ -114,7 +114,10 @@ def process_pdfs(uploaded_files):
             except Exception as e:
                 st.error(f"❌ Error processing {uploaded_file.name}: {str(e)}")
             finally:
-                os.unlink(tmp_file_path)
+                try:
+                    os.unlink(tmp_file_path)
+                except Exception as e:
+                    st.warning(f"Could not remove temporary file: {str(e)}")
     
     if not documents:
         st.error("No documents were successfully processed.")
@@ -136,13 +139,13 @@ def setup_qa_system(documents):
 
             with st.spinner("Loading embedding model (this might take a few minutes the first time)..."):
                 # Create or reuse embeddings model
-                if st.session_state.embeddings_model is None:
-                    st.session_state.embeddings_model = HuggingFaceEmbeddings(
-                        model_name="sentence-transformers/all-mpnet-base-v2",
-                        cache_folder="/tmp/huggingface"
-                    )
+                embeddings = HuggingFaceEmbeddings(
+                    model_name="all-MiniLM-L6-v2",  # Using a smaller, more compatible model
+                    model_kwargs={'device': 'cpu'},
+                    encode_kwargs={'normalize_embeddings': True}
+                )
                 
-                vectorstore = SimpleVectorStore(st.session_state.embeddings_model)
+                vectorstore = SimpleVectorStore(embeddings)
                 vectorstore.add_documents(splits)
 
             # Setup QA chain
@@ -177,7 +180,6 @@ def setup_qa_system(documents):
 
         except Exception as e:
             st.error(f"Error setting up QA system: {str(e)}")
-            import traceback
             st.error(f"Detailed error: {traceback.format_exc()}")
             raise e
 
