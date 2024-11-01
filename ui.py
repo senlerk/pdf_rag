@@ -8,17 +8,8 @@ from langchain.prompts import PromptTemplate
 import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-import nltk
+from sentence_transformers import SentenceTransformer
 import traceback
-from transformers import AutoTokenizer, AutoModel
-import torch
-from typing import List
-
-# Download required NLTK data
-try:
-    nltk.data.find('punkt')
-except LookupError:
-    nltk.download('punkt')
 
 # Set page configuration
 st.set_page_config(
@@ -27,103 +18,26 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS
-st.markdown("""
-    <style>
-        .stAlert {
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }
-        .source-text {
-            padding: 1rem;
-            background-color: #f0f2f6;
-            border-radius: 0.5rem;
-            margin: 0.5rem 0;
-        }
-        .stButton>button {
-            background-color: #4CAF50;
-            color: white;
-            padding: 0.5rem 1rem;
-        }
-        .stButton>button:hover {
-            background-color: #45a049;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-class CustomHuggingFaceEmbeddings:
-    def __init__(self):
-        self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
-        self.model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
-        self.device = 'cpu'
-        self.model = self.model.to(self.device)
-
-    def _mean_pooling(self, model_output, attention_mask):
-        token_embeddings = model_output[0]
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        encoded_input = self.tokenizer(texts, padding=True, truncation=True, max_length=512, return_tensors='pt')
-        encoded_input = {k: v.to(self.device) for k, v in encoded_input.items()}
-        
-        with torch.no_grad():
-            model_output = self.model(**encoded_input)
-            
-        embeddings = self._mean_pooling(model_output, encoded_input['attention_mask'])
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-        return embeddings.cpu().numpy().tolist()
-
-    def embed_query(self, text: str) -> List[float]:
-        return self.embed_documents([text])[0]
-
 class SimpleVectorStore:
-    def __init__(self, embeddings):
-        self.embeddings = embeddings
+    def __init__(self):
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.docs = []
-        self.doc_embeddings = None
+        self.embeddings = None
 
     def add_documents(self, documents):
         self.docs = documents
         texts = [doc.page_content for doc in documents]
-        self.doc_embeddings = self.embeddings.embed_documents(texts)
+        self.embeddings = self.model.encode(texts)
 
-    def similarity_search_with_score(self, query, k=3):
-        query_embedding = self.embeddings.embed_query(query)
-        similarities = cosine_similarity([query_embedding], self.doc_embeddings)[0]
+    def similarity_search(self, query, k=3):
+        query_embedding = self.model.encode([query])[0]
+        similarities = cosine_similarity([query_embedding], self.embeddings)[0]
         top_k_indices = np.argsort(similarities)[-k:][::-1]
-        return [(self.docs[i], similarities[i]) for i in top_k_indices]
+        return [self.docs[i] for i in top_k_indices]
 
     def as_retriever(self, search_kwargs=None):
-        def retrieve(query):
-            results = self.similarity_search_with_score(query, k=search_kwargs.get('k', 3))
-            return [doc for doc, _ in results]
-        return retrieve
-
-def initialize_session_state():
-    """Initialize session state variables"""
-    if 'qa_chain' not in st.session_state:
-        st.session_state.qa_chain = None
-    if 'uploaded_files' not in st.session_state:
-        st.session_state.uploaded_files = []
-    if 'processing_complete' not in st.session_state:
-        st.session_state.processing_complete = False
-    if 'embeddings_model' not in st.session_state:
-        st.session_state.embeddings_model = None
-
-def verify_api_key(api_key):
-    """Verify OpenAI API key"""
-    try:
-        llm = ChatOpenAI(
-            api_key=api_key,
-            model_name="gpt-4-turbo-preview",
-            temperature=0
-        )
-        llm.invoke("test")
-        return True
-    except Exception as e:
-        st.error(f"API Key Error: {str(e)}")
-        return False
+        k = search_kwargs.get('k', 3) if search_kwargs else 3
+        return lambda x: self.similarity_search(x, k=k)
 
 def process_pdfs(uploaded_files):
     """Process uploaded PDF files"""
@@ -143,12 +57,8 @@ def process_pdfs(uploaded_files):
             finally:
                 try:
                     os.unlink(tmp_file_path)
-                except Exception as e:
-                    st.warning(f"Could not remove temporary file: {str(e)}")
-    
-    if not documents:
-        st.error("No documents were successfully processed.")
-        return None
+                except:
+                    pass
     
     return documents
 
@@ -164,11 +74,9 @@ def setup_qa_system(documents):
             )
             splits = text_splitter.split_documents(documents)
 
-            with st.spinner("Loading embedding model (this might take a few minutes the first time)..."):
-                # Use custom embeddings
-                embeddings = CustomHuggingFaceEmbeddings()
-                
-                vectorstore = SimpleVectorStore(embeddings)
+            # Create vector store
+            vectorstore = SimpleVectorStore()
+            with st.spinner("Creating document embeddings..."):
                 vectorstore.add_documents(splits)
 
             # Setup QA chain
@@ -207,8 +115,6 @@ def setup_qa_system(documents):
             raise e
 
 def main():
-    initialize_session_state()
-    
     st.title("📚 PDF Question Answering System")
     
     st.markdown("""
@@ -218,92 +124,54 @@ def main():
     1. Upload PDF documents 📄
     2. Ask questions about their content ❓
     3. Get accurate answers with source references 📝
-    
-    To get started:
-    1. Enter your OpenAI API key in the sidebar
-    2. Upload one or more PDF files
-    3. Click "Process PDFs" to analyze the documents
-    4. Start asking questions!
     """)
     
+    # Initialize session state
+    if 'qa_chain' not in st.session_state:
+        st.session_state.qa_chain = None
+    
+    # Sidebar
     with st.sidebar:
         st.header("Setup")
-        with st.expander("ℹ️ API Key Instructions", expanded=False):
-            st.markdown("""
-            1. Go to [OpenAI API Keys](https://platform.openai.com/api-keys)
-            2. Create a new secret key
-            3. Copy and paste it here
-            4. Make sure you have GPT-4 access enabled
-            """)
-        
-        api_key = st.text_input("Enter OpenAI API Key", type="password", help="Enter your OpenAI API key with GPT-4 access")
+        api_key = st.text_input("Enter OpenAI API Key", type="password")
         
         if api_key:
             os.environ["OPENAI_API_KEY"] = api_key
-            if not verify_api_key(api_key):
-                st.error("❌ Invalid API key or no GPT-4 access")
-                return
             
             uploaded_files = st.file_uploader(
                 "Upload PDF files",
                 type=['pdf'],
-                accept_multiple_files=True,
-                help="Select one or more PDF files to analyze"
+                accept_multiple_files=True
             )
             
             if uploaded_files:
-                if set(f.name for f in uploaded_files) != set(f.name for f in st.session_state.uploaded_files):
-                    st.session_state.uploaded_files = uploaded_files
-                    st.session_state.processing_complete = False
-                    
-                if not st.session_state.processing_complete:
-                    if st.button("Process PDFs", help="Click to analyze the uploaded documents"):
-                        try:
-                            documents = process_pdfs(uploaded_files)
-                            if documents:
-                                st.session_state.qa_chain = setup_qa_system(documents)
-                                st.session_state.processing_complete = True
-                                st.success("✅ System ready for questions!")
-                                st.balloons()
-                        except Exception as e:
-                            st.error(f"Error processing documents: {str(e)}")
+                if st.button("Process PDFs"):
+                    documents = process_pdfs(uploaded_files)
+                    if documents:
+                        st.session_state.qa_chain = setup_qa_system(documents)
+                        st.success("✅ System ready!")
     
-    if st.session_state.processing_complete:
+    # Main Q&A interface
+    if st.session_state.qa_chain:
         st.header("Ask Questions")
+        question = st.text_input("Enter your question:")
         
-        with st.expander("💡 Tips for better answers", expanded=False):
-            st.markdown("""
-            - Be specific in your questions
-            - Ask about one topic at a time
-            - If you don't get a satisfactory answer, try rephrasing the question
-            - Questions starting with What, How, Why, When often work well
-            """)
-        
-        question = st.text_input("Enter your question:", help="Type your question about the uploaded documents")
-        
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            search_button = st.button("🔍 Search", help="Click to get your answer")
-        
-        if search_button:
+        if st.button("Get Answer"):
             if question:
                 try:
-                    with st.spinner("Searching through documents..."):
+                    with st.spinner("Searching..."):
                         result = st.session_state.qa_chain({"query": question})
                         
-                    st.markdown("### 📝 Answer")
+                    st.markdown("### Answer")
                     st.write(result["result"])
                     
-                    st.markdown("### 📚 Sources")
+                    st.markdown("### Sources")
                     for doc in result["source_documents"]:
-                        with st.expander(f"📄 Page {doc.metadata.get('page', 'unknown')}"):
-                            st.markdown(f"<div class='source-text'>{doc.page_content}</div>",
-                                      unsafe_allow_html=True)
+                        with st.expander(f"Page {doc.metadata.get('page', 'unknown')}"):
+                            st.write(doc.page_content)
                             
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
-                    with st.expander("🔍 Debug Information"):
-                        st.error(f"Detailed error: {traceback.format_exc()}")
             else:
                 st.warning("Please enter a question.")
     
