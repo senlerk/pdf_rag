@@ -5,30 +5,33 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
+from langchain.schema import BaseRetriever, Document
 import tempfile
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+from typing import List
 
-# Set page configuration
-st.set_page_config(page_title="PDF Q&A System", layout="wide")
-
-class SimpleRetriever:
+class SimpleRetriever(BaseRetriever):
     def __init__(self):
+        super().__init__()
         self.vectorizer = TfidfVectorizer()
-        self.documents = []
+        self.documents: List[Document] = []
         self.embeddings = None
 
-    def add_documents(self, documents):
+    def add_documents(self, documents: List[Document]):
         self.documents = documents
         texts = [doc.page_content for doc in documents]
         self.embeddings = self.vectorizer.fit_transform(texts)
 
-    def get_relevant_documents(self, query):
+    def get_relevant_documents(self, query: str) -> List[Document]:
         query_vector = self.vectorizer.transform([query])
         similarities = cosine_similarity(query_vector, self.embeddings)[0]
         top_indices = np.argsort(similarities)[-3:][::-1]
         return [self.documents[i] for i in top_indices]
+    
+    async def aget_relevant_documents(self, query: str) -> List[Document]:
+        return self.get_relevant_documents(query)
 
 def process_pdfs(files):
     documents = []
@@ -83,7 +86,7 @@ def main():
                         llm = ChatOpenAI(temperature=0, model_name="gpt-4-turbo-preview")
                         
                         # Create chain
-                        template = """Use these pieces of context to answer the question.
+                        prompt_template = """Use these pieces of context to answer the question.
                         If you don't know the answer, just say "I don't have enough information."
                         
                         Context: {context}
@@ -94,19 +97,21 @@ def main():
                         qa_chain = RetrievalQA.from_chain_type(
                             llm=llm,
                             chain_type="stuff",
-                            retriever=retriever.get_relevant_documents,
+                            retriever=retriever,
                             chain_type_kwargs={
                                 "prompt": PromptTemplate(
-                                    template=template,
+                                    template=prompt_template,
                                     input_variables=["context", "question"]
                                 )
-                            }
+                            },
+                            return_source_documents=True
                         )
                         
                         st.session_state.qa_system = qa_chain
                         st.success("✅ System is ready!")
                 except Exception as e:
                     st.error(f"Error setting up system: {str(e)}")
+                    st.error("Details:", str(type(e).__name__), str(e))
 
     # Main area
     if st.session_state.qa_system:
@@ -119,6 +124,11 @@ def main():
                         response = st.session_state.qa_system({"query": question})
                         st.write("### Answer")
                         st.write(response["result"])
+                        
+                        st.write("### Sources")
+                        for doc in response["source_documents"]:
+                            with st.expander(f"Page {doc.metadata.get('page', 'unknown')}"):
+                                st.write(doc.page_content)
                     except Exception as e:
                         st.error(f"Error getting answer: {str(e)}")
             else:
