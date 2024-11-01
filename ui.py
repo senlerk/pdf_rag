@@ -2,14 +2,13 @@ import streamlit as st
 import os
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 import tempfile
-import chromadb
-import uuid
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 # Set page configuration
 st.set_page_config(
@@ -18,21 +17,28 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS
-st.markdown("""
-    <style>
-        .stAlert {
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }
-        .source-text {
-            padding: 1rem;
-            background-color: #f0f2f6;
-            border-radius: 0.5rem;
-            margin: 0.5rem 0;
-        }
-    </style>
-""", unsafe_allow_html=True)
+class SimpleVectorStore:
+    def __init__(self, embeddings):
+        self.embeddings = embeddings
+        self.docs = []
+        self.doc_embeddings = None
+
+    def add_documents(self, documents):
+        self.docs = documents
+        texts = [doc.page_content for doc in documents]
+        self.doc_embeddings = self.embeddings.embed_documents(texts)
+
+    def similarity_search_with_score(self, query, k=3):
+        query_embedding = self.embeddings.embed_query(query)
+        similarities = cosine_similarity([query_embedding], self.doc_embeddings)[0]
+        top_k_indices = np.argsort(similarities)[-k:][::-1]
+        return [(self.docs[i], similarities[i]) for i in top_k_indices]
+
+    def as_retriever(self, search_kwargs=None):
+        def retrieve(query):
+            results = self.similarity_search_with_score(query, k=search_kwargs.get('k', 3))
+            return [doc for doc, _ in results]
+        return retrieve
 
 def initialize_session_state():
     """Initialize session state variables"""
@@ -42,8 +48,6 @@ def initialize_session_state():
         st.session_state.uploaded_files = []
     if 'processing_complete' not in st.session_state:
         st.session_state.processing_complete = False
-    if 'session_id' not in st.session_state:
-        st.session_state.session_id = str(uuid.uuid4())
 
 def verify_api_key(api_key):
     """Verify OpenAI API key"""
@@ -91,31 +95,13 @@ def setup_qa_system(documents):
             )
             splits = text_splitter.split_documents(documents)
 
-            # Create vector store using Chroma
+            # Create vector store using our simple implementation
             embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-mpnet-base-v2"
             )
             
-            # Create a temporary directory for Chroma
-            temp_dir = tempfile.mkdtemp()
-            persist_directory = os.path.join(temp_dir, st.session_state.session_id)
-            
-            # Initialize Chroma with settings for Streamlit Cloud
-            client = chromadb.Client(
-                settings=chromadb.config.Settings(
-                    persist_directory=persist_directory,
-                    is_persistent=True,
-                    anonymized_telemetry=False
-                )
-            )
-            
-            vectorstore = Chroma.from_documents(
-                documents=splits,
-                embedding=embeddings,
-                persist_directory=persist_directory,
-                client=client,
-                collection_name=st.session_state.session_id
-            )
+            vectorstore = SimpleVectorStore(embeddings)
+            vectorstore.add_documents(splits)
 
             # Setup QA chain
             template = """
