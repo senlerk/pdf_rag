@@ -59,6 +59,15 @@ def main():
     
     # Sidebar for setup
     with st.sidebar:
+        st.header("Setup")
+        with st.expander("Instructions", expanded=False):
+            st.write("""
+            1. Enter your OpenAI API key
+            2. Upload PDF files
+            3. Click 'Process Documents'
+            4. Ask questions about your documents
+            """)
+            
         api_key = st.text_input("OpenAI API Key", type="password")
         files = st.file_uploader("Upload PDFs", type=['pdf'], accept_multiple_files=True)
         
@@ -70,6 +79,10 @@ def main():
                     with st.spinner("Processing documents..."):
                         # Process documents
                         documents = process_pdfs(files)
+                        
+                        if not documents:
+                            st.error("No documents were successfully processed.")
+                            return
                         
                         # Split documents
                         splitter = RecursiveCharacterTextSplitter(
@@ -109,34 +122,41 @@ def main():
                         
                         st.session_state.qa_system = qa_chain
                         st.success("✅ System is ready!")
+                
                 except Exception as e:
-                    st.error(f"Error setting up system: {str(e)}")
-                    st.error("Details:", str(type(e).__name__), str(e))
+                    st.error(f"Error setting up system: {e}")
 
     # Main area
     if st.session_state.qa_system:
         st.write("### Ask a Question")
         question = st.text_input("Enter your question about the documents:")
+        
         if st.button("Get Answer"):
             if question:
-                with st.spinner("Finding answer..."):
-                    try:
+                try:
+                    with st.spinner("Finding answer..."):
                         response = st.session_state.qa_system({"query": question})
-                        st.write("### Answer")
+                        
+                        st.markdown("### 📝 Answer")
                         st.write(response["result"])
                         
-                        st.write("### Sources")
+                        st.markdown("### 📚 Sources")
                         for doc in response["source_documents"]:
-                            with st.expander(f"Page {doc.metadata.get('page', 'unknown')}"):
-                                st.write(doc.page_content)
-                    except Exception as e:
-                        st.error(f"Error getting answer: {str(e)}")
+                            with st.expander(f"📄 Page {doc.metadata.get('page', 'unknown')}"):
+                                st.markdown("""
+                                <div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px;'>
+                                    {}
+                                </div>
+                                """.format(doc.page_content), unsafe_allow_html=True)
+                                
+                except Exception as e:
+                    st.error(f"Error getting answer: {e}")
             else:
                 st.warning("Please enter a question.")
 
     # Footer
     st.markdown("---")
-    st.markdown("Made with Streamlit")
+    st.markdown("Made with ❤️ using Streamlit")
 
 if __name__ == "__main__":
     main()
