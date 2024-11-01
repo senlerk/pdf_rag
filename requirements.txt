@@ -6,3 +6,8 @@ pypdf==4.1.0
 sentence-transformers==2.2.2
 scikit-learn==1.5.2
 numpy==1.26.4
+torch>=1.6.0
+torchvision
+transformers>=4.6.0
+tqdm
+nltk

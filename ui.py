@@ -9,7 +9,15 @@ from langchain.prompts import PromptTemplate
 import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-import pypdf  # Added this import
+import nltk
+import torch
+import pypdf
+
+# Download required NLTK data
+try:
+    nltk.data.find('punkt')
+except LookupError:
+    nltk.download('punkt')
 
 # Set page configuration
 st.set_page_config(
@@ -17,6 +25,30 @@ st.set_page_config(
     page_icon="📚",
     layout="wide"
 )
+
+# Custom CSS
+st.markdown("""
+    <style>
+        .stAlert {
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .source-text {
+            padding: 1rem;
+            background-color: #f0f2f6;
+            border-radius: 0.5rem;
+            margin: 0.5rem 0;
+        }
+        .stButton>button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 0.5rem 1rem;
+        }
+        .stButton>button:hover {
+            background-color: #45a049;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 class SimpleVectorStore:
     def __init__(self, embeddings):
@@ -49,6 +81,8 @@ def initialize_session_state():
         st.session_state.uploaded_files = []
     if 'processing_complete' not in st.session_state:
         st.session_state.processing_complete = False
+    if 'embeddings_model' not in st.session_state:
+        st.session_state.embeddings_model = None
 
 def verify_api_key(api_key):
     """Verify OpenAI API key"""
@@ -82,6 +116,10 @@ def process_pdfs(uploaded_files):
             finally:
                 os.unlink(tmp_file_path)
     
+    if not documents:
+        st.error("No documents were successfully processed.")
+        return None
+    
     return documents
 
 def setup_qa_system(documents):
@@ -96,13 +134,16 @@ def setup_qa_system(documents):
             )
             splits = text_splitter.split_documents(documents)
 
-            # Create vector store using our simple implementation
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-mpnet-base-v2"
-            )
-            
-            vectorstore = SimpleVectorStore(embeddings)
-            vectorstore.add_documents(splits)
+            with st.spinner("Loading embedding model (this might take a few minutes the first time)..."):
+                # Create or reuse embeddings model
+                if st.session_state.embeddings_model is None:
+                    st.session_state.embeddings_model = HuggingFaceEmbeddings(
+                        model_name="sentence-transformers/all-mpnet-base-v2",
+                        cache_folder="/tmp/huggingface"
+                    )
+                
+                vectorstore = SimpleVectorStore(st.session_state.embeddings_model)
+                vectorstore.add_documents(splits)
 
             # Setup QA chain
             template = """
@@ -136,20 +177,43 @@ def setup_qa_system(documents):
 
         except Exception as e:
             st.error(f"Error setting up QA system: {str(e)}")
+            import traceback
+            st.error(f"Detailed error: {traceback.format_exc()}")
             raise e
 
 def main():
     initialize_session_state()
     
     st.title("📚 PDF Question Answering System")
+    
+    # Add a description with markdown formatting
     st.markdown("""
-    Upload your PDF documents and ask questions about their content. 
-    The system will provide answers based on the information found in the documents.
+    ### Welcome to the PDF Q&A Assistant! 
+    
+    This system allows you to:
+    1. Upload PDF documents 📄
+    2. Ask questions about their content ❓
+    3. Get accurate answers with source references 📝
+    
+    To get started:
+    1. Enter your OpenAI API key in the sidebar
+    2. Upload one or more PDF files
+    3. Click "Process PDFs" to analyze the documents
+    4. Start asking questions!
     """)
     
+    # Sidebar for API key and file upload
     with st.sidebar:
         st.header("Setup")
-        api_key = st.text_input("Enter OpenAI API Key", type="password")
+        with st.expander("ℹ️ API Key Instructions", expanded=False):
+            st.markdown("""
+            1. Go to [OpenAI API Keys](https://platform.openai.com/api-keys)
+            2. Create a new secret key
+            3. Copy and paste it here
+            4. Make sure you have GPT-4 access enabled
+            """)
+        
+        api_key = st.text_input("Enter OpenAI API Key", type="password", help="Enter your OpenAI API key with GPT-4 access")
         
         if api_key:
             os.environ["OPENAI_API_KEY"] = api_key
@@ -160,7 +224,8 @@ def main():
             uploaded_files = st.file_uploader(
                 "Upload PDF files",
                 type=['pdf'],
-                accept_multiple_files=True
+                accept_multiple_files=True,
+                help="Select one or more PDF files to analyze"
             )
             
             if uploaded_files:
@@ -169,7 +234,7 @@ def main():
                     st.session_state.processing_complete = False
                     
                 if not st.session_state.processing_complete:
-                    if st.button("Process PDFs"):
+                    if st.button("Process PDFs", help="Click to analyze the uploaded documents"):
                         try:
                             documents = process_pdfs(uploaded_files)
                             if documents:
@@ -180,30 +245,47 @@ def main():
                         except Exception as e:
                             st.error(f"Error processing documents: {str(e)}")
     
+    # Main area for Q&A
     if st.session_state.processing_complete:
         st.header("Ask Questions")
-        question = st.text_input("Enter your question:")
         
-        if st.button("Get Answer"):
+        with st.expander("💡 Tips for better answers", expanded=False):
+            st.markdown("""
+            - Be specific in your questions
+            - Ask about one topic at a time
+            - If you don't get a satisfactory answer, try rephrasing the question
+            - Questions starting with What, How, Why, When often work well
+            """)
+        
+        question = st.text_input("Enter your question:", help="Type your question about the uploaded documents")
+        
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            search_button = st.button("🔍 Search", help="Click to get your answer")
+        
+        if search_button:
             if question:
                 try:
-                    with st.spinner("Searching for answer..."):
+                    with st.spinner("Searching through documents..."):
                         result = st.session_state.qa_chain({"query": question})
                         
-                    st.markdown("### Answer")
+                    st.markdown("### 📝 Answer")
                     st.write(result["result"])
                     
-                    st.markdown("### Sources")
+                    st.markdown("### 📚 Sources")
                     for doc in result["source_documents"]:
-                        with st.expander(f"Page {doc.metadata.get('page', 'unknown')}"):
+                        with st.expander(f"📄 Page {doc.metadata.get('page', 'unknown')}"):
                             st.markdown(f"<div class='source-text'>{doc.page_content}</div>",
                                       unsafe_allow_html=True)
                             
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+                    with st.expander("🔍 Debug Information"):
+                        st.error(f"Detailed error: {traceback.format_exc()}")
             else:
                 st.warning("Please enter a question.")
     
+    # Footer
     st.markdown("---")
     st.markdown("Made with ❤️ using Streamlit and LangChain")
 
