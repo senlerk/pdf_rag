@@ -9,6 +9,7 @@ from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 import tempfile
 import chromadb
+import uuid
 
 # Set page configuration
 st.set_page_config(
@@ -41,8 +42,8 @@ def initialize_session_state():
         st.session_state.uploaded_files = []
     if 'processing_complete' not in st.session_state:
         st.session_state.processing_complete = False
-    if 'chroma_client' not in st.session_state:
-        st.session_state.chroma_client = chromadb.Client()
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
 
 def verify_api_key(api_key):
     """Verify OpenAI API key"""
@@ -96,42 +97,55 @@ def setup_qa_system(documents):
             )
             
             # Create a temporary directory for Chroma
-            with tempfile.TemporaryDirectory() as persist_directory:
-                vectorstore = Chroma.from_documents(
-                    documents=splits,
-                    embedding=embeddings,
-                    persist_directory=persist_directory
+            temp_dir = tempfile.mkdtemp()
+            persist_directory = os.path.join(temp_dir, st.session_state.session_id)
+            
+            # Initialize Chroma with settings for Streamlit Cloud
+            client = chromadb.Client(
+                settings=chromadb.config.Settings(
+                    persist_directory=persist_directory,
+                    is_persistent=True,
+                    anonymized_telemetry=False
                 )
+            )
+            
+            vectorstore = Chroma.from_documents(
+                documents=splits,
+                embedding=embeddings,
+                persist_directory=persist_directory,
+                client=client,
+                collection_name=st.session_state.session_id
+            )
 
-                # Setup QA chain
-                template = """
-                Use the following context to answer the question. If you don't know the answer or can't find it in the context, just say "I don't have enough information to answer this question."
+            # Setup QA chain
+            template = """
+            Use the following context to answer the question. If you don't know the answer or can't find it in the context, just say "I don't have enough information to answer this question."
 
-                Context: {context}
-                
-                Question: {question}
-                
-                Answer: """
+            Context: {context}
+            
+            Question: {question}
+            
+            Answer: """
 
-                QA_PROMPT = PromptTemplate(
-                    template=template,
-                    input_variables=['context', 'question']
-                )
+            QA_PROMPT = PromptTemplate(
+                template=template,
+                input_variables=['context', 'question']
+            )
 
-                llm = ChatOpenAI(
-                    model_name="gpt-4-turbo-preview",
-                    temperature=0
-                )
-                
-                qa_chain = RetrievalQA.from_chain_type(
-                    llm=llm,
-                    chain_type="stuff",
-                    retriever=vectorstore.as_retriever(search_kwargs={'k': 3}),
-                    return_source_documents=True,
-                    chain_type_kwargs={'prompt': QA_PROMPT}
-                )
-                
-                return qa_chain
+            llm = ChatOpenAI(
+                model_name="gpt-4-turbo-preview",
+                temperature=0
+            )
+            
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=llm,
+                chain_type="stuff",
+                retriever=vectorstore.as_retriever(search_kwargs={'k': 3}),
+                return_source_documents=True,
+                chain_type_kwargs={'prompt': QA_PROMPT}
+            )
+            
+            return qa_chain
 
         except Exception as e:
             st.error(f"Error setting up QA system: {str(e)}")
