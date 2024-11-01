@@ -3,7 +3,6 @@ langchain==0.1.0
 langchain-community==0.0.13
 langchain-openai==0.0.3
 pypdf==4.1.0
-sentence-transformers==2.2.2
 scikit-learn==1.5.2
 numpy==1.26.4
 torch==2.2.0
@@ -12,3 +11,5 @@ transformers==4.37.2
 tqdm==4.66.1
 nltk==3.8.1
 huggingface-hub==0.20.3
+setuptools==68.2.2
+sentence-transformers==2.2.2

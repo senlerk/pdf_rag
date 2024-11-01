@@ -2,7 +2,6 @@ import streamlit as st
 import os
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
@@ -11,6 +10,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import nltk
 import traceback
+from transformers import AutoTokenizer, AutoModel
+import torch
+from typing import List
 
 # Download required NLTK data
 try:
@@ -48,6 +50,32 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
+
+class CustomHuggingFaceEmbeddings:
+    def __init__(self):
+        self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
+        self.model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
+        self.device = 'cpu'
+        self.model = self.model.to(self.device)
+
+    def _mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output[0]
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        encoded_input = self.tokenizer(texts, padding=True, truncation=True, max_length=512, return_tensors='pt')
+        encoded_input = {k: v.to(self.device) for k, v in encoded_input.items()}
+        
+        with torch.no_grad():
+            model_output = self.model(**encoded_input)
+            
+        embeddings = self._mean_pooling(model_output, encoded_input['attention_mask'])
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        return embeddings.cpu().numpy().tolist()
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
 
 class SimpleVectorStore:
     def __init__(self, embeddings):
@@ -91,7 +119,6 @@ def verify_api_key(api_key):
             model_name="gpt-4-turbo-preview",
             temperature=0
         )
-        # Simple test prompt
         llm.invoke("test")
         return True
     except Exception as e:
@@ -138,12 +165,8 @@ def setup_qa_system(documents):
             splits = text_splitter.split_documents(documents)
 
             with st.spinner("Loading embedding model (this might take a few minutes the first time)..."):
-                # Create or reuse embeddings model
-                embeddings = HuggingFaceEmbeddings(
-                    model_name="all-MiniLM-L6-v2",  # Using a smaller, more compatible model
-                    model_kwargs={'device': 'cpu'},
-                    encode_kwargs={'normalize_embeddings': True}
-                )
+                # Use custom embeddings
+                embeddings = CustomHuggingFaceEmbeddings()
                 
                 vectorstore = SimpleVectorStore(embeddings)
                 vectorstore.add_documents(splits)
@@ -188,7 +211,6 @@ def main():
     
     st.title("📚 PDF Question Answering System")
     
-    # Add a description with markdown formatting
     st.markdown("""
     ### Welcome to the PDF Q&A Assistant! 
     
@@ -204,7 +226,6 @@ def main():
     4. Start asking questions!
     """)
     
-    # Sidebar for API key and file upload
     with st.sidebar:
         st.header("Setup")
         with st.expander("ℹ️ API Key Instructions", expanded=False):
@@ -247,7 +268,6 @@ def main():
                         except Exception as e:
                             st.error(f"Error processing documents: {str(e)}")
     
-    # Main area for Q&A
     if st.session_state.processing_complete:
         st.header("Ask Questions")
         
@@ -287,7 +307,6 @@ def main():
             else:
                 st.warning("Please enter a question.")
     
-    # Footer
     st.markdown("---")
     st.markdown("Made with ❤️ using Streamlit and LangChain")
 
